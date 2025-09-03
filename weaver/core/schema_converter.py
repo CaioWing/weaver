@@ -113,6 +113,7 @@ class SchemaConverter:
         """
         def enhance_property(prop: Dict[str, Any], field_name: str) -> Dict[str, Any]:
             prop_type = prop.get("type", "unknown")
+            prop_format = prop.get("format", "")
             
             # Add format hints for common types
             if prop_type == "string":
@@ -126,10 +127,21 @@ class SchemaConverter:
                 elif field_name.lower() in ["phone", "telephone", "phone_number"]:
                     if "description" not in prop:
                         prop["description"] = "A valid phone number"
-                elif "date" in field_name.lower():
+                elif prop_format == "date":
+                    # This is a date field (not datetime)
+                    if "description" not in prop:
+                        prop["description"] = "Date in YYYY-MM-DD format (date only, no time)"
+                elif "date" in field_name.lower() and prop_format != "date":
+                    # This might be a datetime field
                     prop["format"] = "date-time"
                     if "description" not in prop:
                         prop["description"] = "ISO 8601 datetime string"
+                elif field_name.lower() == "cpf":
+                    if "description" not in prop:
+                        prop["description"] = "Brazilian CPF in format XXX.XXX.XXX-XX (exactly 11 digits [0-9] with dots and dash)"
+                elif field_name.lower() in ["zip_code", "postal_code", "cep"]:
+                    if "description" not in prop:
+                        prop["description"] = "Brazilian ZIP code in format XXXXX-XXX (8 digits [0-9] with optional dash)"
             
             elif prop_type == "integer":
                 if field_name.lower() in ["id", "user_id", "product_id"]:
