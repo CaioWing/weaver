@@ -128,18 +128,8 @@ Weaver is built with a modular architecture that makes it easy to:
 - [ ] Enhanced error reporting
 - [ ] Support for Enums, Unions, and advanced types
 
-### Month 3: Enterprise Features  
-- [ ] Database schema introspection
-- [ ] Template system
-- [ ] Multiple export formats (SQL, CSV)
-- [ ] Additional LLM providers
-
 ## License
 
 MIT License - see LICENSE file for details.
 
 ---
-
-**Made with love by the Weaver team**
-
-*Generate realistic test data in seconds, not hours.*
