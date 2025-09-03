@@ -116,25 +116,26 @@ class Weaver:
                         allow_partial=False
                     )
                     
-                    # Return single instance or list based on count
+                    # Result is always a list now, handle based on count requested
+                    if not isinstance(result, list):
+                        raise ValidationError("Internal error: expected list from validator")
+                    
                     if count == 1:
-                        return result[0] if isinstance(result, list) else result
-                    else:
-                        # Ensure we have the right number of instances
-                        if isinstance(result, list):
-                            if len(result) == count:
-                                return result
-                            elif len(result) < count:
-                                raise ValidationError(
-                                    f"Expected {count} instances, got {len(result)}"
-                                )
-                            else:
-                                return result[:count]  # Trim to requested count
+                        # User wanted single instance, return just the first item
+                        if len(result) >= 1:
+                            return result[0]
                         else:
-                            # Single instance when multiple were requested
+                            raise ValidationError("No valid instances generated")
+                    else:
+                        # User wanted multiple instances
+                        if len(result) == count:
+                            return result
+                        elif len(result) < count:
                             raise ValidationError(
-                                f"Expected {count} instances, got single instance"
+                                f"Expected {count} instances, got {len(result)}"
                             )
+                        else:
+                            return result[:count]  # Trim to requested count
                     
                 except ValidationError as e:
                     last_error = e

@@ -27,6 +27,9 @@ class OpenRouterProvider(LLMProvider):
         # Google models
         "google/gemini-pro-1.5",
         "google/gemini-pro",
+        "google/gemini-2.5-flash-lite",
+        # Free models
+        "google/gemini-2.5-flash-image-preview:free",
     }
     
     # Default models by provider
