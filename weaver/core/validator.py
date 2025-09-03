@@ -44,11 +44,13 @@ class ResponseValidator:
                         llm_response=response
                     ) from e
             
-            # Handle array responses (multiple instances)
+            # Always normalize to list for consistent handling
             if isinstance(data, list):
                 return ResponseValidator._validate_list(data, model, allow_partial)
             else:
-                return ResponseValidator._validate_single(data, model, allow_partial)
+                # Single object - wrap in list and then validate
+                single_result = ResponseValidator._validate_single(data, model, allow_partial)
+                return [single_result]
                 
         except ValidationError:
             raise
