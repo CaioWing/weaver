@@ -1,182 +1,170 @@
 """Core Weaver class for generating test data."""
 
-from typing import Type, Union, List, Optional
+from typing import Type, Union, List, Optional, Dict, Any
 from pydantic import BaseModel
 
-from .schema_converter import SchemaConverter
-from .validator import ResponseValidator
-from ..providers import registry, LLMProvider
-from ..exceptions import WeaverError, ValidationError
+from .dependency_resolver import DependencyResolver
+from .prompt_builder import PromptBuilder
+from .data_generator import DataGenerator
+from ..models import create_model, get_default_model
+from ..exceptions import WeaverError
 
 
 class Weaver:
-    """Main class for generating realistic test data using LLMs."""
+    """Main class for generating realistic test data using LLMs.
+    
+    This is the simplified, modular version of Weaver that delegates
+    specialized tasks to dedicated modules.
+    """
     
     def __init__(
         self,
-        provider: Optional[Union[str, LLMProvider]] = None,
+        provider: Union[str, object] = "openai",
         api_key: Optional[str] = None,
         model: Optional[str] = None,
         **config
     ):
         """
-        Initialize Weaver with LLM provider configuration.
+        Initialize Weaver with Pydantic AI provider.
         
         Args:
-            provider: Provider name or instance (default: "openai")
-            api_key: API key for the provider
+            provider: Provider name or Pydantic AI provider instance
+            api_key: API key for the provider (ignored if provider is instance)
             model: Model name to use
             **config: Additional provider configuration
         """
         self.config = config
         
-        # Set up provider
-        if isinstance(provider, LLMProvider):
-            self.provider = provider
-        else:
-            provider_name = provider or "openai"
-            provider_config = {
-                "api_key": api_key,
-                "model": model or self._get_default_model(provider_name),
+        # Handle both provider names and model instances
+        if isinstance(provider, str):
+            # Create model from provider name
+            self.model_name = model or get_default_model(provider)
+            self.model = create_model(
+                provider_name=provider,
+                model_name=self.model_name,
+                api_key=api_key,
                 **config
-            }
-            # Remove None values
-            provider_config = {k: v for k, v in provider_config.items() if v is not None}
-            
-            try:
-                self.provider = registry.get_provider(provider_name, **provider_config)
-            except Exception as e:
-                raise WeaverError(f"Failed to initialize provider '{provider_name}': {str(e)}") from e
+            )
+            self.provider_name = provider
+        else:
+            # Use provided model instance (assuming it's a Pydantic AI model)
+            self.model = provider
+            self.model_name = model or getattr(provider, 'model_name', 'unknown')
+            self.provider_name = getattr(provider, '__class__', type(provider)).__name__.lower().replace('model', '')
+        
+        # Initialize specialized modules
+        self._data_generator = DataGenerator(self.model, self.model_name, self.provider_name)
     
     def generate(
         self,
-        model: Type[BaseModel],
-        prompt: str,
+        model: Union[Type[BaseModel], Dict[str, Type[BaseModel]], List[Type[BaseModel]]],
+        prompt: Union[str, Dict[str, str]] = "",
         count: int = 1,
-        temperature: float = 0.1,
-        max_tokens: Optional[int] = None,
-        max_retries: int = 3,
-    ) -> Union[BaseModel, List[BaseModel]]:
+        **options
+    ) -> Union[BaseModel, List[BaseModel], Dict[str, Union[BaseModel, List[BaseModel]]]]:
         """
-        Generate test data based on a Pydantic model and natural language prompt.
+        Universal generate method that handles all scenarios intelligently.
         
         Args:
-            model: Pydantic model class to generate data for
-            prompt: Natural language description of the desired data
-            count: Number of instances to generate (default: 1)
-            temperature: Generation temperature 0.0-1.0 (default: 0.1)
-            max_tokens: Maximum tokens to generate
-            max_retries: Maximum number of retries on validation failure
-            
-        Returns:
-            Single model instance if count=1, otherwise list of instances
-            
-        Raises:
-            WeaverError: If generation fails
-            ValidationError: If validation fails after all retries
-        """
-        try:
-            # Convert Pydantic model to JSON Schema
-            schema = SchemaConverter.convert_to_json_schema(model)
-            
-            # Create system prompt with schema
-            system_prompt = SchemaConverter.create_system_prompt(schema, model.__name__)
-            
-            # Modify user prompt for multiple instances
-            if count > 1:
-                user_prompt = f"Generate {count} different instances of the following: {prompt}"
-                # Wrap schema in array for multiple instances
-                array_schema = {
-                    "type": "array",
-                    "items": schema,
-                    "minItems": count,
-                    "maxItems": count
-                }
-                system_prompt = SchemaConverter.create_system_prompt(array_schema, model.__name__)
-            else:
-                user_prompt = prompt
-            
-            # Generate with retries
-            last_error = None
-            for attempt in range(max_retries + 1):
-                try:
-                    # Call LLM provider
-                    response = self.provider.generate(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        schema=schema,
-                        temperature=temperature,
-                        max_tokens=max_tokens
-                    )
+            model: Single model, dict of models, or list of models
+            prompt: Single prompt, dict of prompts, or default prompt
+            count: Number of instances to generate
+            **options: Additional options (realistic=True, diverse=True, etc.)
 
-                    # Validate and parse response
-                    result = ResponseValidator.validate_and_parse(
-                        response=response,
-                        model=model,
-                        allow_partial=False
-                    )
-                    
-                    # Result is always a list now, handle based on count requested
-                    if not isinstance(result, list):
-                        raise ValidationError("Internal error: expected list from validator")
-                    
-                    if count == 1:
-                        # User wanted single instance, return just the first item
-                        if len(result) >= 1:
-                            return result[0]
-                        else:
-                            raise ValidationError("No valid instances generated")
-                    else:
-                        # User wanted multiple instances
-                        if len(result) == count:
-                            return result
-                        elif len(result) < count:
-                            raise ValidationError(
-                                f"Expected {count} instances, got {len(result)}"
-                            )
-                        else:
-                            return result[:count]  # Trim to requested count
-                    
-                except ValidationError as e:
-                    last_error = e
-                    if attempt < max_retries:
-                        # Modify prompt for retry
-                        user_prompt = f"{prompt} (Attempt {attempt + 2}: Please ensure valid JSON format)"
-                        continue
-                    else:
-                        break
+        Returns:
+            Generated data matching input structure
+        """
+        
+        try:
+            # Scenario 1: Single model
+            if isinstance(model, type) and issubclass(model, BaseModel):
+                return self._generate_single(model, prompt, count, **options)
             
-            # If we get here, all retries failed
-            if last_error:
-                raise last_error
+            # Scenario 2: Multiple models (dict or list)
+            elif isinstance(model, (dict, list)):
+                return self._generate_multiple(model, prompt, count, **options)
+            
             else:
-                raise WeaverError("Generation failed after all retries")
+                raise WeaverError(f"Invalid model type: {type(model)}")
                 
-        except (WeaverError, ValidationError):
-            raise
         except Exception as e:
-            raise WeaverError(f"Unexpected error during generation: {str(e)}") from e
+            raise WeaverError(f"Generation failed: {str(e)}") from e
     
-    def _get_default_model(self, provider_name: str) -> str:
-        """Get default model for a provider."""
-        defaults = {
-            "openai": "gpt-4-turbo",
-            "openrouter": "openai/gpt-4-turbo",
-        }
-        return defaults.get(provider_name, "gpt-4-turbo")
+    def _generate_single(
+        self, 
+        model: Type[BaseModel], 
+        prompt: str, 
+        count: int, 
+        **options
+    ) -> Union[BaseModel, List[BaseModel]]:
+        """Generate data for a single model with auto-dependency detection."""
+        
+        # Auto-detect if this model has dependencies that need to be generated first
+        dependencies = DependencyResolver.auto_detect_dependencies(model)
+        
+        if dependencies:
+            # This model has dependencies - generate them first
+            dependency_models = {}
+            dependency_prompts = {}
+            
+            for dep_model_class in dependencies:
+                dep_name = dep_model_class.__name__.lower()
+                dependency_models[dep_name] = dep_model_class
+                dependency_prompts[dep_name] = PromptBuilder.infer_prompt(dep_model_class, options)
+            
+            # Add the main model
+            main_name = model.__name__.lower()
+            dependency_models[main_name] = model
+            dependency_prompts[main_name] = PromptBuilder.enhance_prompt(prompt, model, options)
+            
+            # Generate all related data
+            results = self._data_generator.generate_related_data(
+                dependency_models, dependency_prompts, count
+            )
+            
+            # Return only the requested model's data
+            return results[main_name]
+        else:
+            # No dependencies - generate directly
+            enhanced_prompt = PromptBuilder.enhance_prompt(prompt, model, options)
+            return self._data_generator.generate_independent(model, enhanced_prompt, count)
     
+    def _generate_multiple(
+        self, 
+        models: Union[Dict[str, Type[BaseModel]], List[Type[BaseModel]]], 
+        prompts: Union[str, Dict[str, str]], 
+        count: int, 
+        **options
+    ) -> Dict[str, Union[BaseModel, List[BaseModel]]]:
+        """Generate data for multiple models with automatic relationship detection."""
+        
+        # Normalize inputs using utility modules
+        models_dict = DependencyResolver.normalize_models_input(models)
+        model_names = list(models_dict.keys())
+        prompts_dict = PromptBuilder.normalize_prompts_input(prompts, model_names, options)
+        
+        # Auto-enhance prompts
+        for name, model_class in models_dict.items():
+            if name in prompts_dict:
+                prompts_dict[name] = PromptBuilder.enhance_prompt(
+                    prompts_dict[name], model_class, options
+                )
+        
+        return self._data_generator.generate_related_data(models_dict, prompts_dict, count)
+    
+    # Legacy and utility methods
     @property
-    def provider_name(self) -> str:
+    def provider_name_property(self) -> str:
         """Get the name of the current provider."""
-        return self.provider.name
+        return self.provider_name
     
     @property
     def provider_info(self) -> dict:
         """Get information about the current provider."""
         return {
-            "name": self.provider.name,
-            "supports_json_mode": self.provider.supports_json_mode,
-            "config": getattr(self.provider, "config", {})
+            "name": self.provider_name,
+            "model": self.model_name,
+            "config": self.config
         }
     
     @staticmethod

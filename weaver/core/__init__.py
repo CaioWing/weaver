@@ -1,11 +1,13 @@
-"""Core Weaver functionality."""
+"""Weaver core modules for data generation."""
 
 from .weaver import Weaver
-from .schema_converter import SchemaConverter
-from .validator import ResponseValidator
+from .dependency_resolver import DependencyResolver
+from .prompt_builder import PromptBuilder
+from .data_generator import DataGenerator
 
 __all__ = [
     "Weaver",
-    "SchemaConverter", 
-    "ResponseValidator",
+    "DependencyResolver", 
+    "PromptBuilder",
+    "DataGenerator",
 ]
